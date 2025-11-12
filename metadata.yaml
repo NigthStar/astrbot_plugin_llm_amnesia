@@ -1,6 +1,47 @@
-name: helloworld # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
-display_name: helloworld # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
-desc: AstrBot 插件示例。 # 插件简短描述
-version: v1.3.0 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: Soulter # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+name: astrbot_plugin_llm_amnesia
+display_name: llm_amnesia
+desc: 当您不满意大模型的回复时，使用 /forget 指令，让它“忘记”最近的N轮对话，以便您重新提问并获得更好的回答。
+version: v1.0.0
+author: NigthStar
+repo: https://github.com/NigthStar/astrbot_plugin_llm_amnesia
+# 插件配置项
+# 可在这里定义插件的配置项，用户可以在 WebUI 中配置
+# config: {}
+
+# 插件依赖的 AstrBot 版本
+# astrbot_version: 
+
+# 插件标签
+# tags: []
+
+# 插件分类
+# categories: []
+
+# 插件图标 (可选)
+# logo: logo.png
+
+# 插件主页 (可选)
+# homepage: https://github.com/astrbot_plugin_forget
+
+# 插件支持的平台 (可选)
+# platforms:
+#   - qq
+#   - telegram
+#   - 飞书
+#   - 企业微信
+#   - 钉钉
+
+# 插件权限要求 (可选)
+# permissions:
+#   - admin
+#   - group_admin
+#   - normal
+
+# 插件是否默认启用 (可选)
+# default_enabled: true
+
+# 插件是否支持热重载 (可选)
+# hot_reload: true
+
+# 插件优先级 (可选)
+# priority: 100
