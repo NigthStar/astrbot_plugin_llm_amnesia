@@ -11,7 +11,7 @@ import json
     "llm_amnesia",
     "NigthStar",
     "当您不满意大模型的回复时，使用 /forget 指令，让它“忘记”最近的N轮对话，以便您重新提问并获得更好的回答。",
-    "1.1.0",
+    "1.1.1",
     "https://github.com/NigthStar/astrbot_plugin_llm_amnesia"
 )
 class ForgetPlugin(Star):
@@ -59,7 +59,7 @@ class ForgetPlugin(Star):
         for unified_msg_origin in expired_sessions:
             del self.deleted_conversations[unified_msg_origin]
 
-    @filter.message()
+    @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_new_message(self, event: AstrMessageEvent):
         """监听所有新消息，自动清除遗忘记录
         
