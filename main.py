@@ -1,18 +1,17 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.api.provider import ProviderRequest  # <-- 需要导入这个
+from astrbot.api.provider import ProviderRequest
 import asyncio
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 from datetime import datetime, timedelta
 import json
-
 
 @register(
     "llm_amnesia",
     "NigthStar",
     "当您不满意大模型的回复时，使用 /forget 指令，让它“忘记”最近的N轮对话，以便您重新提问并获得更好的回答。",
-    "1.1.4", 
+    "1.1.5",
     "https://github.com/NigthStar/astrbot_plugin_llm_amnesia"
 )
 class ForgetPlugin(Star):
@@ -20,7 +19,9 @@ class ForgetPlugin(Star):
         super().__init__(context)
         # 临时存储被删除的对话，用于反悔功能
         self.deleted_conversations: Dict[str, Dict[str, Tuple[List[dict], str, datetime, int]]] = {}
-        # 清理任务
+        # 为并发访问 self.deleted_conversations 创建一个锁
+        self.lock = asyncio.Lock()
+        # 后台清理任务
         self.cleanup_task = asyncio.create_task(self.initialize_cleanup_task())
         logger.info("遗忘插件已加载并启动清理任务")
 
@@ -29,7 +30,7 @@ class ForgetPlugin(Star):
         while True:
             try:
                 await self.cleanup_expired_deletions()
-                await asyncio.sleep(300)
+                await asyncio.sleep(300)  # 每5分钟清理一次
             except asyncio.CancelledError:
                 logger.info("清理任务被取消")
                 break
@@ -38,70 +39,50 @@ class ForgetPlugin(Star):
                 await asyncio.sleep(60)
 
     async def cleanup_expired_deletions(self):
-        """清理过期的删除记录"""
-        current_time = datetime.now()
-        expired_sessions = []
-        
-        for unified_msg_origin, user_deletions in self.deleted_conversations.items():
-            expired_users = []
-            for user_id, (messages, conversation_id, timestamp, round_count) in user_deletions.items():
-                if current_time - timestamp > timedelta(minutes=30):
-                    expired_users.append(user_id)
-            
-            for user_id in expired_users:
-                del user_deletions[user_id]
-                logger.info(f"清理过期删除记录: unified_msg_origin={unified_msg_origin}, user={user_id}")
-            
-            if not user_deletions:
-                expired_sessions.append(unified_msg_origin)
-        
-        for unified_msg_origin in expired_sessions:
-            del self.deleted_conversations[unified_msg_origin]
+        """(并发安全) 清理过期的删除记录"""
+        async with self.lock:
+            current_time = datetime.now()
+            # 遍历会话的副本，以便在循环中安全地删除元素
+            for unified_msg_origin, user_deletions in list(self.deleted_conversations.items()):
+                # 遍历用户的副本
+                for user_id, (_, _, timestamp, _) in list(user_deletions.items()):
+                    if current_time - timestamp > timedelta(minutes=30):
+                        del user_deletions[user_id]
+                        logger.info(f"清理过期删除记录: unified_msg_origin={unified_msg_origin}, user={user_id}")
+                
+                # 如果清理后该会话下已无记录，则删除该会话键
+                if not user_deletions:
+                    del self.deleted_conversations[unified_msg_origin]
 
-    # ------------------- BUG修复关键改动 -------------------
-    # 【已移除】删除了旧的、有问题的 on_new_message 处理器
-    
-    # 【已新增】使用LLM请求钩子来处理清理逻辑，更健壮、更准确
     @filter.on_llm_request()
     async def on_llm_request_cleanup(self, event: AstrMessageEvent, req: ProviderRequest):
-        """
-        在AstrBot即将调用LLM前，自动清除可“反悔”的遗忘记录。
-        这是最完美的时机，因为它确保了只有在用户真正开始新的AI对话时才清除记录。
-        """
+        """(并发安全) 在AstrBot即将调用LLM前，自动清除可“反悔”的遗忘记录"""
         unified_msg_origin = event.unified_msg_origin
         user_id = event.get_sender_id()
         
-        # 如果该用户有待反悔的记录，现在就清除它
-        if (unified_msg_origin in self.deleted_conversations and 
-            user_id in self.deleted_conversations[unified_msg_origin]):
-            
-            # 从存储中删除记录
-            del self.deleted_conversations[unified_msg_origin][user_id]
-            if not self.deleted_conversations[unified_msg_origin]:
-                del self.deleted_conversations[unified_msg_origin]
-            
-            logger.info(f"用户 {user_id} 发起了新的LLM请求，自动清除遗忘记录。")
-    # ----------------------------------------------------
+        async with self.lock:
+            if (unified_msg_origin in self.deleted_conversations and 
+                user_id in self.deleted_conversations[unified_msg_origin]):
+                
+                del self.deleted_conversations[unified_msg_origin][user_id]
+                if not self.deleted_conversations[unified_msg_origin]:
+                    del self.deleted_conversations[unified_msg_origin]
+                
+                logger.info(f"用户 {user_id} 发起了新的LLM请求，自动清除遗忘记录。")
 
     @filter.command("forget")
     async def forget_conversations(self, event: AstrMessageEvent, round_count: int = 1):
-        """遗忘指定数量的对话轮次
-        
-        Args:
-            round_count: 要遗忘的对话轮次数，默认为1
-        """
+        """(并发安全) 遗忘指定数量的对话轮次"""
         try:
             unified_msg_origin = event.unified_msg_origin
             user_id = event.get_sender_id()
             
             logger.info(f"forget指令开始 - 会话: {unified_msg_origin}, 用户: {user_id}, 轮次: {round_count}")
 
-            # 验证参数
             if not 1 <= round_count <= 10:
                 yield event.plain_result("遗忘轮次数必须在1到10之间 ❌")
                 return
 
-            # 获取对话管理器和当前对话ID
             conv_mgr = self.context.conversation_manager
             curr_cid = await conv_mgr.get_curr_conversation_id(unified_msg_origin)
             if not curr_cid:
@@ -111,7 +92,6 @@ class ForgetPlugin(Star):
             
             logger.info(f"获取到当前对话ID: {curr_cid}")
             
-            # 获取对话对象
             conversation = await conv_mgr.get_conversation(unified_msg_origin, curr_cid)
             if not conversation:
                 logger.warning("无法获取对话对象")
@@ -121,7 +101,6 @@ class ForgetPlugin(Star):
             logger.info(f"成功获取对话对象，对话ID: {conversation.cid}")
             logger.info(f"对话历史长度: {len(conversation.history) if conversation.history else 0}")
 
-            # 解析对话历史
             conversation_history = []
             try:
                 conversation_history = json.loads(conversation.history) if conversation.history else []
@@ -145,27 +124,22 @@ class ForgetPlugin(Star):
                         break
             
             if split_index == len(conversation_history):
-                logger.info("没有找到足够的可删除对话轮次")
+                logger.info(f"没有找到足够的可删除对话轮次")
                 yield event.plain_result(f"只找到了 {rounds_found} 轮可遗忘的对话 ❌")
                 return
             
             new_conversation_history = conversation_history[:split_index]
             deleted_messages = conversation_history[split_index:]
 
-            if unified_msg_origin not in self.deleted_conversations:
-                self.deleted_conversations[unified_msg_origin] = {}
-            
-            self.deleted_conversations[unified_msg_origin][user_id] = (
-                deleted_messages, 
-                conversation.cid,
-                datetime.now(),
-                round_count
-            )
+            async with self.lock:
+                if unified_msg_origin not in self.deleted_conversations:
+                    self.deleted_conversations[unified_msg_origin] = {}
+                self.deleted_conversations[unified_msg_origin][user_id] = (
+                    deleted_messages, conversation.cid, datetime.now(), round_count
+                )
 
             await conv_mgr.update_conversation(
-                unified_msg_origin, 
-                conversation.cid,
-                history=new_conversation_history
+                unified_msg_origin, conversation.cid, history=new_conversation_history
             )
             
             logger.info(f"删除对话: 原始长度 {len(conversation_history)} -> 新长度 {len(new_conversation_history)}")
@@ -180,9 +154,7 @@ class ForgetPlugin(Star):
                 deleted_info += f"🤖 AI: {assistant_msg}{'...' if len(assistant_msg) >= 50 else ''}\n\n"
             
             yield event.plain_result(
-                f"✅ 已遗忘 {round_count} 轮对话\n\n"
-                f"{deleted_info}"
-                f"💡 在下一条消息发送前，发送 /cancel_forget 可以恢复这些对话"
+                f"✅ 已遗忘 {round_count} 轮对话\n\n{deleted_info}💡 在下一条消息发送前，发送 /cancel_forget 可以恢复这些对话"
             )
             
         except Exception as e:
@@ -193,17 +165,24 @@ class ForgetPlugin(Star):
 
     @filter.command("cancel_forget")
     async def cancel_forget(self, event: AstrMessageEvent):
-        """取消遗忘操作，恢复被删除的对话"""
+        """(并发安全) 取消遗忘操作，恢复被删除的对话"""
         try:
             unified_msg_origin = event.unified_msg_origin
             user_id = event.get_sender_id()
             
-            if (unified_msg_origin not in self.deleted_conversations or 
-                user_id not in self.deleted_conversations[unified_msg_origin]):
+            record_to_restore = None
+            async with self.lock:
+                if (unified_msg_origin in self.deleted_conversations and 
+                    user_id in self.deleted_conversations[unified_msg_origin]):
+                    record_to_restore = self.deleted_conversations[unified_msg_origin].pop(user_id)
+                    if not self.deleted_conversations[unified_msg_origin]:
+                        self.deleted_conversations.pop(unified_msg_origin)
+
+            if not record_to_restore:
                 yield event.plain_result("没有可恢复的遗忘记录 ❌")
                 return
             
-            deleted_messages, conversation_id, timestamp, round_count = self.deleted_conversations[unified_msg_origin][user_id]
+            deleted_messages, conversation_id, _, round_count = record_to_restore
             
             conv_mgr = self.context.conversation_manager
             conversation = await conv_mgr.get_conversation(unified_msg_origin, conversation_id)
@@ -212,29 +191,17 @@ class ForgetPlugin(Star):
                 yield event.plain_result("获取当前对话失败 ❌")
                 return
             
-            conversation_history = []
-            if conversation.history:
-                conversation_history = json.loads(conversation.history)
-            
+            conversation_history = json.loads(conversation.history) if conversation.history else []
             restored_conversation_history = conversation_history + deleted_messages
             
             await conv_mgr.update_conversation(
-                unified_msg_origin, 
-                conversation_id, 
-                history=restored_conversation_history
+                unified_msg_origin, conversation_id, history=restored_conversation_history
             )
-            
-            del self.deleted_conversations[unified_msg_origin][user_id]
-            
-            if not self.deleted_conversations[unified_msg_origin]:
-                del self.deleted_conversations[unified_msg_origin]
             
             logger.info(f"用户 {user_id} 在会话 {unified_msg_origin} 取消了遗忘操作，恢复了 {round_count} 轮对话")
             
             yield event.plain_result(
-                f"✅ 已恢复 {round_count} 轮被删除的对话\n\n"
-                f"恢复的对话已追加到对话历史末尾\n\n"
-                f"对话已恢复到之前的状态"
+                f"✅ 已恢复 {round_count} 轮被删除的对话\n\n对话已恢复到之前的状态"
             )
             
         except Exception as e:
@@ -243,27 +210,28 @@ class ForgetPlugin(Star):
 
     @filter.command("forget_status")
     async def forget_status(self, event: AstrMessageEvent):
-        """查看遗忘状态"""
+        """(并发安全) 查看遗忘状态"""
         try:
             unified_msg_origin = event.unified_msg_origin
             user_id = event.get_sender_id()
             
-            if (unified_msg_origin in self.deleted_conversations and 
-                user_id in self.deleted_conversations[unified_msg_origin]):
-                deleted_messages, conversation_id, timestamp, round_count = self.deleted_conversations[unified_msg_origin][user_id]
-                time_ago = datetime.now() - timestamp
-                minutes_ago = int(time_ago.total_seconds() / 60)
-                
-                yield event.plain_result(
-                    f"📝 遗忘状态\n\n"
-                    f"你有可恢复的遗忘记录:\n"
-                    f"⏰ 删除时间: {minutes_ago}分钟前\n"
-                    f"🔄 删除轮次: {round_count}轮\n"
-                    f"💬 删除消息数: {len(deleted_messages)}条\n\n"
-                    f"💡 发送 /cancel_forget 可以恢复这些对话"
-                )
-            else:
-                yield event.plain_result("没有待恢复的遗忘记录 ✅")
+            async with self.lock:
+                record = self.deleted_conversations.get(unified_msg_origin, {}).get(user_id)
+                if record:
+                    deleted_messages, _, timestamp, round_count = record
+                    time_ago = datetime.now() - timestamp
+                    minutes_ago = int(time_ago.total_seconds() / 60)
+                    
+                    yield event.plain_result(
+                        f"📝 遗忘状态\n\n"
+                        f"你有可恢复的遗忘记录:\n"
+                        f"⏰ 删除时间: {minutes_ago}分钟前\n"
+                        f"🔄 删除轮次: {round_count}轮\n"
+                        f"💬 删除消息数: {len(deleted_messages)}条\n\n"
+                        f"💡 发送 /cancel_forget 可以恢复这些对话"
+                    )
+                else:
+                    yield event.plain_result("没有待恢复的遗忘记录 ✅")
                 
         except Exception as e:
             logger.error(f"查看遗忘状态时出错: {e}")
@@ -298,5 +266,9 @@ class ForgetPlugin(Star):
         """插件卸载时的清理工作"""
         if self.cleanup_task and not self.cleanup_task.done():
             self.cleanup_task.cancel()
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass  # 任务取消是正常行为
             logger.info("清理任务已取消")
         logger.info("遗忘插件已卸载")
