@@ -1,7 +1,7 @@
 name: astrbot_plugin_llm_amnesia
 display_name: LLM遗忘插件
 desc: 当您不满意大模型的回复时，使用 /forget 指令，让它“忘记”最近的N轮对话，以便您重新提问并获得更好的回答。
-version: v1.1.2
+version: v1.1.4
 author: NigthStar
 repo: https://github.com/NigthStar/astrbot_plugin_llm_amnesia
 # 插件配置项
