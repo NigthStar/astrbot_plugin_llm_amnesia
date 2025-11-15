@@ -16,24 +16,25 @@
 - **📊 状态查询**: 随时查看遗忘状态和可恢复的对话详情
 - **🔒 会话隔离**: 按会话和用户隔离，互不影响
 - **📚 帮助系统**: 完整的使用帮助和指令说明
+- **🚀 并发安全**: 引入异步锁机制，确保在高并发场景下的稳定运行，杜绝竞态条件。
+- **🛠️ 健壮设计**: 采用事件钩子等高级特性，智能判断反悔时机，避免误操作。
 
 ## 🚀 安装方法
 
 ### 方法一：通过插件市场安装（推荐）
 
-1. 打开 AstrBot WebUI
-2. 进入"插件管理"页面
-3. 在插件市场中搜索"遗忘插件"
-4. 点击安装即可
+1. 打开 AstrBot WebUI。
+2. 进入"插件管理"页面。
+3. 在插件市场中搜索"遗忘插件"(llm_amnesia)。
+4. 点击安装即可。
 
 ### 方法二：手动安装
 
 1. 克隆本仓库到 AstrBot 插件目录
 ```bash
 cd AstrBot/data/plugins
-git clone https://github.com/your-username/astrbot_plugin_forget.git
+git clone https://github.com/SinkAbyss/astrbot_plugin_llm_amnesia.git
 ```
-
 2. 重启 AstrBot 或在 WebUI 中重载插件
 
 ## 📖 使用说明
@@ -171,10 +172,12 @@ def find_conversation_rounds(self, conversation_history: List[dict], round_count
 - **自动清理时间**: 30分钟
 - **反悔时间限制**: 下一条消息发送前
 
-### 安全机制
-- 会话和用户完全隔离
-- 自动错误处理和异常捕获
-- 内存泄漏防护
+## 🛠️ 健壮性与安全
+
+-   **并发安全**: 使用 `asyncio.Lock` 保护共享数据，杜绝竞态条件，防止后台任务崩溃。
+-   **会话隔离**: 会话和用户完全隔离，互不影响。
+-   **错误处理**: 完善的 `try...except` 块捕获和记录异常，防止插件意外退出。
+-   **内存管理**: 后台任务会定时清理超过30分钟的遗忘记录，防止内存泄漏。
 
 ## 📚 开发信息
 
@@ -183,11 +186,8 @@ def find_conversation_rounds(self, conversation_history: List[dict], round_count
 astrbot_plugin_forget/
 ├── main.py              # 主要插件代码
 ├── metadata.yaml        # 插件元数据
-├── requirements.txt     # 依赖库
+├── requirements.txt     # 依赖库(当前为空)
 ├── README.md           # 使用说明
-├── examples.md         # 使用示例
-├── install.py          # 安装脚本
-└── test_*.py           # 测试脚本
 ```
 
 ### 依赖要求
@@ -196,6 +196,16 @@ astrbot_plugin_forget/
 - 无额外第三方依赖
 
 ## 📝 更新日志
+
+### v1.1.5 (2025-11-15)
+
+-   **🐛 Bug 修复**:
+    -   修复了执行 `/forget_status` 等插件指令时，会意外清除可反悔记录的严重Bug。
+-   **🔒 健壮性增强**:
+    -   引入 `asyncio.Lock` 解决并发访问共享数据时的竞态条件问题，防止后台清理任务崩溃。
+-   **✨ 代码质量**:
+    -   使用 `dataclass` 替代复杂的元组来定义数据结构，大幅提升了代码的可读性和可维护性。
+    -   重构了 `forget_conversations` 函数，使用单次循环和切片操作提升性能。
 
 ### v1.1.0 (2025-11-12)
 - ✅ 新增批量遗忘功能，支持1-10轮对话
@@ -240,7 +250,7 @@ astrbot_plugin_forget/
 ## 💬 联系方式
 
 如有问题或建议，欢迎：
-- 提交 [Issue](https://github.com/your-username/astrbot_plugin_forget/issues)
+- 提交 [Issue](https://github.com/SinkAbyss/astrbot_plugin_llm_amnesia/issues)
 - 加入 AstrBot 官方交流群
 - 发送邮件至: 1053757925@qq.com
 
